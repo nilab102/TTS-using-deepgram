@@ -1,0 +1,4 @@
+fastapi
+uvicorn
+deepgram-sdk==3.*
+python-dotenv
