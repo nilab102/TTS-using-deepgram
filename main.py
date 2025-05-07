@@ -1,7 +1,7 @@
 import os
 import uuid
 import hashlib
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -14,9 +14,9 @@ load_dotenv(override=True)
 app = FastAPI()
 
 # Create and mount a static folder to serve saved audio files
-AUDIO_FOLDER = "static"
-os.makedirs(AUDIO_FOLDER, exist_ok=True)
-app.mount("/static", StaticFiles(directory=AUDIO_FOLDER), name="static")
+audio_folder = "static"
+os.makedirs(audio_folder, exist_ok=True)
+app.mount("/static", StaticFiles(directory=audio_folder), name="static")
 
 # Define the request body model
 class TTSRequest(BaseModel):
@@ -32,8 +32,7 @@ deepgram = DeepgramClient(DEEPGRAM_API_KEY)
 def compute_cache_filename(text: str, model: str) -> str:
     """Compute a SHA256 hash from text and model, and return a filename for caching."""
     hash_object = hashlib.sha256(f"{model}:{text}".encode())
-    filename = hash_object.hexdigest() + ".mp3"
-    return filename
+    return hash_object.hexdigest() + ".mp3"
 
 def generate_and_save_tts(text: str, model: str, file_path: str):
     """
@@ -47,7 +46,7 @@ def generate_and_save_tts(text: str, model: str, file_path: str):
     return response
 
 @app.post("/tts", response_class=JSONResponse)
-async def text_to_speech(req: TTSRequest):
+async def text_to_speech(req: TTSRequest, request: Request):
     """
     Accepts a JSON payload with:
       - "text": The text to convert to speech.
@@ -61,19 +60,21 @@ async def text_to_speech(req: TTSRequest):
     try:
         # Compute cache filename based on text and model
         filename = compute_cache_filename(req.text, req.model)
-        file_path = os.path.join(AUDIO_FOLDER, filename)
+        file_path = os.path.join(audio_folder, filename)
+
+        # Build the absolute URL for the static file
+        # Using url_for to respect mount settings and host
+        file_url = request.url_for('static', path=filename)
 
         # Check if the file already exists (cache hit)
         if os.path.exists(file_path):
-            file_link = f"/static/{filename}"
-            return {"link": file_link, "cached": True}
+            return {"link": str(file_url), "cached": True}
 
         # Run the blocking TTS operation in a threadpool (cache miss)
         await run_in_threadpool(generate_and_save_tts, req.text, req.model, file_path)
 
         # Return the link to the newly saved audio file
-        file_link = f"/static/{filename}"
-        return {"link": file_link, "cached": False}
+        return {"link": str(file_url), "cached": False}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
