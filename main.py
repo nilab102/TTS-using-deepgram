@@ -1,18 +1,26 @@
 import os
-import uuid
 import hashlib
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from fastapi.concurrency import run_in_threadpool
 from deepgram import DeepgramClient, SpeakOptions
 from dotenv import load_dotenv
-
+from google import genai
+from google.genai import types
+import uvicorn
+from fastapi.middleware.cors import CORSMiddleware
 load_dotenv(override=True)
 
 app = FastAPI()
-
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 # Create and mount a static folder to serve saved audio files
 audio_folder = "static"
 os.makedirs(audio_folder, exist_ok=True)
@@ -78,6 +86,72 @@ async def text_to_speech(req: TTSRequest, request: Request):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+# Load API key from environment variable
+api_key = os.getenv("google_api_key_gemini")
+
+# Initialize Gemini client
+client = genai.Client(api_key=api_key)
+
+def transcribe_audio_directly(
+    audio_bytes: bytes,
+    mime_type: str,
+    model: str = "gemini-2.0-flash-lite"
+) -> str:
+    """
+    Transcribe an audio file using Google Gemini API.
+    """
+    try:
+        # Wrap bytes in a Part object with correct MIME type
+        audio_part = types.Part.from_bytes(data=audio_bytes, mime_type=mime_type)
+        
+        system_prompt = '''
+Please transcribe this audio accurately. If any email addresses, phone numbers, physical addresses, or similar details are detected, transcribe them carefully and standardize them to the correct format.
+
+For example:
+
+If an email is spoken with spaces or capital letters (e.g. ‘N I L A B 102 @ GMAIL dot COM’ or ‘Nilab 102 @ Gmail.com’), convert it to lowercase without spaces (e.g. nilab102@gmail.com).
+
+If a phone number is spoken digit by digit or with pauses, reconstruct it into a continuous, correctly formatted number (e.g. ‘zero one six one six seven six six six six’ → 0161676666).
+
+The speaker's English accent is primarily Arabic and Indian, so please pay extra attention to accent-related nuances and common pronunciation patterns when transcribing and normalizing details.Remove time stamps and speaker labels from the transcription.'''
+
+        # Call Gemini API
+        response = client.models.generate_content(
+            model=model,
+            contents=[
+                audio_part,
+                system_prompt
+            ],
+            config={
+                "temperature": 0
+            }
+        )
+
+        return response.text
+
+    except Exception as e:
+        raise RuntimeError(f"Transcription failed: {str(e)}")
+import time
+@app.post("/transcribe/")
+async def transcribe_audio(file: UploadFile = File(...)):
+    try:
+        # Validate file type
+        if file.content_type not in ["audio/wav", "audio/x-wav", "audio/mpeg"]:
+            raise HTTPException(status_code=400, detail="Only .wav and .mp3 files are supported.")
+
+        # Read the file contents into bytes
+        audio_bytes = await file.read()
+        start_time = time.time()
+        # Call transcription function with correct mime type
+        transcription = transcribe_audio_directly(audio_bytes, file.content_type)
+        end_time = time.time()
+        return JSONResponse(content={"transcription": transcription, "time_taken": end_time - start_time})
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error during transcription: {str(e)}")
+
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8001, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=6500, reload=True)
