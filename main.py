@@ -11,6 +11,10 @@ from google import genai
 from google.genai import types
 import uvicorn
 from fastapi.middleware.cors import CORSMiddleware
+import numpy as np
+import soundfile as sf
+import io
+import time
 load_dotenv(override=True)
 
 app = FastAPI()
@@ -97,9 +101,11 @@ def transcribe_audio_directly(
     audio_bytes: bytes,
     mime_type: str,
     model: str = "gemini-2.0-flash-lite"
-) -> str:
+) -> tuple[str, bool]:
     """
     Transcribe an audio file using Google Gemini API.
+    Returns:
+        tuple: (transcription text, is_successful)
     """
     try:
         # Wrap bytes in a Part object with correct MIME type
@@ -110,11 +116,14 @@ Please transcribe this audio accurately. If any email addresses, phone numbers, 
 
 For example:
 
-If an email is spoken with spaces or capital letters (e.g. ‘N I L A B 102 @ GMAIL dot COM’ or ‘Nilab 102 @ Gmail.com’), convert it to lowercase without spaces (e.g. nilab102@gmail.com).
+If an email is spoken with spaces or capital letters (e.g. 'N I L A B 102 @ GMAIL dot COM' or 'Nilab 102 @ Gmail.com'), convert it to lowercase without spaces (e.g. nilab102@gmail.com).
 
-If a phone number is spoken digit by digit or with pauses, reconstruct it into a continuous, correctly formatted number (e.g. ‘zero one six one six seven six six six six’ → 0161676666).
+If a phone number is spoken digit by digit or with pauses, reconstruct it into a continuous, correctly formatted number (e.g. 'zero one six one six seven six six six six' → 0161676666).
 
-The speaker's English accent is primarily Arabic and Indian, so please pay extra attention to accent-related nuances and common pronunciation patterns when transcribing and normalizing details.Remove time stamps and speaker labels from the transcription.'''
+The speaker's English accent is primarily Arabic and Indian, so please pay extra attention to accent-related nuances and common pronunciation patterns when transcribing and normalizing details.Remove time stamps and speaker labels from the transcription.
+Dont put extra '\n' in the transcription.
+if the audio is silent, return an empty string.
+'''
 
         # Call Gemini API
         response = client.models.generate_content(
@@ -128,25 +137,31 @@ The speaker's English accent is primarily Arabic and Indian, so please pay extra
             }
         )
 
-        return response.text
+        transcription = response.text.strip()
+        # Set is_successful based on whether transcription is empty or not
+        is_successful = bool(transcription)
+        return transcription, is_successful
 
     except Exception as e:
         raise RuntimeError(f"Transcription failed: {str(e)}")
-import time
+
 @app.post("/transcribe/")
 async def transcribe_audio(file: UploadFile = File(...)):
     try:
-        # Validate file type
-        if file.content_type not in ["audio/wav", "audio/x-wav", "audio/mpeg"]:
-            raise HTTPException(status_code=400, detail="Only .wav and .mp3 files are supported.")
 
         # Read the file contents into bytes
         audio_bytes = await file.read()
         start_time = time.time()
+        
         # Call transcription function with correct mime type
-        transcription = transcribe_audio_directly(audio_bytes, file.content_type)
+        transcription, is_successful = transcribe_audio_directly(audio_bytes, file.content_type)
         end_time = time.time()
-        return JSONResponse(content={"transcription": transcription, "time_taken": end_time - start_time})
+        
+        return JSONResponse(content={
+            "transcription": transcription,
+            "is_successful": is_successful,
+            "time_taken": end_time - start_time
+        })
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error during transcription: {str(e)}")
